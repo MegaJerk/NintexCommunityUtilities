@@ -1,14 +1,13 @@
-/* global NWF$, NWF, NF, Page_ClientValidate, outerDiv, ValidatorOnLoad, _spPageContextInfo */
+/* global NWF$, NWF, NF, Page_ClientValidate, Page_Validators, outerDiv, ValidatorOnLoad, _spPageContextInfo */
 /* eslint-env browser */
 /* eslint no-console: ["error", { allow: ["log", "error"] }]  */
 
 /*global 
-  NWF$, NWF, NF, Page_ClientValidate, outerDiv, ValidatorOnLoad, _spPageContextInfo 
+  NWF$, NWF, NF, Page_ClientValidate, Page_Validators, outerDiv, ValidatorOnLoad, _spPageContextInfo 
 */
 
-
-
-////////////////////////////// NCU-Core-1.0.js //////////////////////////////
+////////////////////////////// NCU-Core.js //////////////////////////////
+//  Version: 1.0
 //	Author: MegaJerk
 //	gitHub: https://github.com/MegaJerk
 //	Nintex: https://community.nintex.com/t5/user/viewprofilepage/user-id/8331
@@ -21,7 +20,7 @@
 var NCU = (function (NCU, options) {
 	"use strict";
 
-	console.log("loading NCU-Core.js");
+	// console.log("loading NCU-Core.js");
 	//  All variables that our functions rely on, or would otherwise be placed into the global-scope
 	//  live here inside of the FormVariables property. 
 	NCU.FormVariables = (function (FormVariables) {
@@ -264,7 +263,21 @@ var NCU = (function (NCU, options) {
 			var rawValue = NWF.FormFiller.Functions.GetValue(targetFormControlID, sourceContext, getValueAsString);
 			return rawValue;
 		};
-
+		
+		
+		//  getControlByName: Will return the a jQuery object containing the outermost <div> container
+		//	of the specified control (in the specified context), if a Control of the name can be found.
+		//  
+		//  Return Type(s): jQuery Object
+		//  ----------------
+		//  getControlByName("priceControl", repeatingSectionRow1) 	// A jQuery Object of the outermost <div> of the control from repeatingSectionRow1
+		//  getControlByName("priceControl")										// A jQuery Object of the outermost <div> of *any* controls named "priceControl"
+		//  ----------------
+		FormFunctions.getControlByName = function (controlName, sourceContext) {
+			sourceContext = (sourceContext || NWF$(document));
+			return sourceContext.find("[data-controlname='" + controlName + "']");			
+		};
+		
 
 		//  hideRepeatingSectionPanels: Will hide a Panel inside of a Repeating Section.
 		//  It requires an array of classes that will be iterated over, and any Panels found which have a matching
@@ -375,10 +388,23 @@ var NCU = (function (NCU, options) {
 		//	a normalization of a Nintex provided function that, through updates, has changed locations in their code. 
 		//	To learn what the functions does and how it works, please see their (Nintex's) code found in one of the two -
 		//	namespaces being referneced.
-		FormFunctions.RepositionAndResizeOtherControlsAndFillerContainerHeight = (
-			NWF.FormFiller.Functions.RepositionAndResizeOtherControlsAndFillerContainerHeight ||
-			NWF.FormFiller.Resize.RepositionAndResizeOtherControlsAndFillerContainerHeight
-		);
+		FormFunctions.RepositionAndResizeOtherControlsAndFillerContainerHeight = (function(){
+			var returnFunc;
+			try {
+				returnFunc = (
+					NWF.FormFiller.Functions.RepositionAndResizeOtherControlsAndFillerContainerHeight ||
+					NWF.FormFiller.Resize.RepositionAndResizeOtherControlsAndFillerContainerHeight
+				);
+			} catch(e){
+				// console.log("Unable to find the RepositionAndResizeOtherControlsAndFillerContainerHeight function.");
+				console.log(e);
+			} finally {
+				if (returnFunc === undefined) {
+					returnFunc = function(){return false;};
+				}
+			}
+			return returnFunc;
+		}());
 
 
 		//  setCanvasContainerHeight: Fixes the incorrect way that Nintex Forms increase / decrease the
@@ -412,6 +438,21 @@ var NCU = (function (NCU, options) {
 			ValidatorOnLoad();
 		});
 	}
+	
+	//	Repeating Sections don't always clean up after themselves when you delete a Row,
+	//	leaving behind Validation Rule references pointing to Controls that have been removed.
+	//	Because of this, we'll need to clean up the global Page_Validators array ourselves,
+	//	first looking for any validator span elements, and then removing them from the global
+	//	array if found. 
+	if (typeof Page_Validators !== "undefined") {
+		NWF.FormFiller.Events.RegisterRepeaterRowDeleting(function (thisRow) {
+			thisRow.children(".nf-validator-error").each(function (index, validator) {
+				if (Page_Validators.indexOf(validator) > -1) {
+					Page_Validators.splice(Page_Validators.indexOf(validator), 1);
+				}
+			});
+		});
+	}
 
 	//  Every time that a Repeating Section has a Row Added or Deleted, any hidden Repeating Section
 	//  will need to be rebuilt (if any), and the Canvas Height will need to be readjusted as the
@@ -427,7 +468,7 @@ var NCU = (function (NCU, options) {
 	});
 
 	//	Anytime a Formatting Rule shows or hides a Control, the height of the canvas is,
-	//	by default, incorrectly recalculated. The following Form event will correctly
+	//	by default, incorrectly recalculated. The following two Form events will correctly
 	//	readjust the Form Canvas to the correct size.
 	NWF.FormFiller.Events.RegisterControlShowHidePropagated(function (targetControl) {
 		if (targetControl.data("RepositionControls")) {
@@ -435,12 +476,16 @@ var NCU = (function (NCU, options) {
 		}
 	});
 
+	NWF.FormFiller.Events.RegisterRuleProcessed(function(){
+		NCU.FormFunctions.setCanvasContainerHeight();	
+	});
+
 	//	Anytime a Control's height adjustment results in a sibling Control being repositioned
 	//	the canvas will be resized, by default, incorrectly.
 	//	The following Form event will correctly	readjust the Form Canvas to the correct size.
 	NWF.FormFiller.Events.RegisterControlHeightChangePropagated(function () {
 		NCU.FormFunctions.setCanvasContainerHeight();
-	});
+	});	
 
 	//  When Nintex introduced Responsive Forms, Classic Forms sometimes has trouble loading the
 	//  a JavaScript Library that is referenced in the updated code that handles Adding Repeating
@@ -458,16 +503,16 @@ var NCU = (function (NCU, options) {
 	NWF.FormFiller.Events.RegisterBeforeReady(function () {
 		if (typeof NF.BaseDataAccessHelper === "undefined" && NCU.FormVariables.pageContextDefined) {
 			try {
-				console.log("Attempting to load missing js file: 'NF.BaseDataAccessHelper.js'");
+				// console.log("Attempting to load missing js file: 'NF.BaseDataAccessHelper.js'");
 				NWF$.getScript(_spPageContextInfo.siteAbsoluteUrl.replace(/sites.+/, "") + _spPageContextInfo.layoutsUrl + "/NintexForms/JavaScriptStringHandler.ashx?" + "resourceType=jsfile&" + "fileName=NF.BaseDataAccessHelper.js&" + "culture=" + _spPageContextInfo.currentCultureName);
 			} catch (e) {
-				console.log("There was a problem loading the BaseDataAccessHelper using the JavaScriptStringHandler!");
-				console.log("Your version of Nintex Forms may not rely on it, or there could be something configured incorrectly");
-				console.log("If your Repeating Sections can Add Rows without breaking, then it's unnecessary.");
+				// console.log("There was a problem loading the BaseDataAccessHelper using the JavaScriptStringHandler!");
+				// console.log("Your version of Nintex Forms may not rely on it, or there could be something configured incorrectly");
+				// console.log("If your Repeating Sections can Add Rows without breaking, then it's unnecessary.");
 				console.log(e);
 			}
 		}
-
+		
 		outerDiv.outerHeight(outerDiv.height());
 	});
 
@@ -502,7 +547,7 @@ var NCU = (function (NCU, options) {
 			}
 		};
 	}
-	
+
 	return NCU;
 }(
 	(NCU || {}), {
